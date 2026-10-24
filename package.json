@@ -1,0 +1,10 @@
+{
+  "name": "browser-use-mcp",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "puppeteer-core": "^25.16.0",
+    "zod": "^4.6.7"
+  }
+}
