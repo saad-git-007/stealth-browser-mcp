@@ -1,4 +1,4 @@
-# Browser Use MCP
+# Stealth Browser MCP
 
 A local [Model Context Protocol](https://modelcontextprotocol.io/) server for automating a real, visible Firefox browser through WebDriver BiDi. It provides focused tools for navigation, page reading, form interaction, screenshots, tab management, and browser fingerprint diagnostics.
 
@@ -22,8 +22,8 @@ The MCP process communicates over stdio. A persistent local daemon owns the Fire
 ## Install
 
 ```bash
-git clone https://github.com/saad-git-007/browser-use-mcp.git
-cd browser-use-mcp
+git clone https://github.com/saad-git-007/stealth-browser-mcp.git
+cd stealth-browser-mcp
 npm ci
 ```
 
@@ -36,7 +36,7 @@ Point your MCP client to `scripts/mcp-server.mjs` using an absolute path. For cl
   "mcpServers": {
     "browser-use": {
       "command": "node",
-      "args": ["/absolute/path/to/browser-use-mcp/scripts/mcp-server.mjs"]
+      "args": ["/absolute/path/to/stealth-browser-mcp/scripts/mcp-server.mjs"]
     }
   }
 }
