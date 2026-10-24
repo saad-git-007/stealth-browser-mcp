@@ -596,47 +596,6 @@ async function runCommand(cmd, args, flags = {}) {
       await page.screenshot({ path: dest, fullPage: !!flags.fullPage });
       return { screenshot: dest, url: page.url(), title: await page.title() };
     }
-    case 'indeed': {
-      const query = pos[0];
-      if (!query) throw new Error('usage: indeed <query> [--location L] [--tld com] [--page N]');
-      const tld = flags.tld || 'com';
-      const host = ({ ca: 'ca.indeed.com', uk: 'uk.indeed.com', in: 'in.indeed.com', com: 'www.indeed.com', au: 'au.indeed.com' })[tld] || `www.indeed.${tld}`;
-      const loc = flags.location || '';
-      const pageNumber = Math.max(parseInt(flags.page || '0', 10) || 0, 0);
-      const url = `https://${host}/jobs?q=${encodeURIComponent(query)}&l=${encodeURIComponent(loc)}&start=${pageNumber * 10}&fromage=14`;
-      const page = await activePage(browser);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
-      await sleep(rnd(900, 1600));
-      await markActive(page);
-      const cf = await waitOutChallenge(page);
-      const jobs = await page.evaluate(() => {
-        const cards = [...document.querySelectorAll('.job_seen_beacon, [data-testid=job_card]')];
-        const tid = (c, s) => (c.querySelector(s)?.innerText || '').trim();
-        return cards.map(c => {
-          const a = c.querySelector('a.jcs-JobTitle, h2.jobTitle a, h3.jobTitle a');
-          let title = c.querySelector('h2.jobTitle span[title], h3.jobTitle span[title]')?.getAttribute('title')
-            || (c.querySelector('h2.jobTitle, h3.jobTitle')?.innerText || '').trim();
-          if (!title && a) title = (a.getAttribute('aria-label') || '').replace(/^full details of /i, '');
-          return {
-            title,
-            company: tid(c, '[data-testid*=company-name]') || tid(c, '[data-testid=companyName]'),
-            location: tid(c, '[data-testid*=text-location]') || tid(c, '[data-testid=location]'),
-            salary: tid(c, '[data-testid~=salary-snippet-container]'),
-            attrs: tid(c, '[data-testid=attribute_snippet_testid]'),
-            snippet: (c.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 260),
-            link: a?.href || '',
-            jk: a?.dataset?.jk || '',
-          };
-        });
-      });
-      const text = await page.evaluate('document.body.innerText');
-      const blocked = isCfChallengeText(text) ? 'challenge' : /blocked|captcha|unusual traffic/i.test(text.slice(0, 4000)) ? 'blocked' : false;
-      return {
-        url, jobsFound: jobs.length, blocked, jobs,
-        cfWaitedSec: cf.challenged ? cf.waited : undefined,
-        text: jobs.length ? undefined : truncate(text, 2500),
-      };
-    }
     case 'stop': {
       let closed = false;
       try { await browser.close(); closed = true; } catch { /* maybe already gone */ }
@@ -662,7 +621,7 @@ async function runCommand(cmd, args, flags = {}) {
       return { pong: true, port: PORT, browser: !!S.browser };
     }
     default:
-      throw new Error(`unknown command "${cmd}" — try: start | status | tabs | open | text | extract | wait | click | type | fill | js | screenshot | indeed | restart | stop | ping`);
+      throw new Error(`unknown command "${cmd}" — try: start | status | tabs | open | text | extract | wait | click | type | fill | js | screenshot | restart | stop | ping`);
   }
 }
 
@@ -833,7 +792,6 @@ if (cmd === 'serve') {
       'type <selector> <text>',
       'fill <json>   (or: fill -  with JSON on stdin)',
       'js <expression> | screenshot <path> [--fullPage]',
-      'indeed <query> [--location L] [--tld com] [--page N]',
     ],
   }, 1);
 } else {

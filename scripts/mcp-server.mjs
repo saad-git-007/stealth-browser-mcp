@@ -55,7 +55,7 @@ const server = new McpServer({
   instructions: [
     'Controls the user\'s REAL visible Firefox (stealth: navigator.webdriver=false, remote-control banner hidden, humanized typing/clicking, persistent cookies/profile).',
     'Flow: browser_start → browser_open-url → verify with browser_text / browser_screenshot → interact with browser_click / browser_type / browser_fill.',
-    'Indeed job search: browser_indeed (tld: com|ca|uk|in|au). Fingerprint self-audit: browser_fingerprint.',
+    'Fingerprint self-audit: browser_fingerprint.',
     'Ask the user BEFORE submitting applications or payment forms. Never solve CAPTCHAs — ask the user.',
   ].join('\n'),
 });
@@ -117,15 +117,6 @@ reg('browser_screenshot', 'PNG screenshot of the active tab. Returns path + the 
       return out;
     });
   });
-reg('browser_indeed', 'Search jobs on Indeed (country via tld: com/ca/uk/in/au; ca = ca.indeed.com). Returns parsed jobs with title/company/location/salary/link/jk.', {
-  query: z.string(), location: z.string().optional(), tld: z.string().optional(), page: z.number().optional(),
-}, (a) => {
-  const argv = [a.query];
-  if (a.location) argv.push('--location', a.location);
-  if (a.tld) argv.push('--tld', a.tld);
-  if (a.page != null) argv.push('--page', String(a.page));
-  return callBrowser('indeed', argv, 420).then(JSON_OK);
-});
 reg('browser_fingerprint', 'Stealth self-audit: run the same JS checks bot-detection run on the page (webdriver flag, chrome object, plugins, WebGL…). Should report zero issues.', {},
   () => callBrowser('fingerprint').then(JSON_OK));
 
