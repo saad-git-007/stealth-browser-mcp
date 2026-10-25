@@ -2,16 +2,16 @@
 
 **Stealth browser automation for AI agents (Claude, Codex, OpenCode, Cursor, and any MCP client).**
 
-This repository is a **stealth browsing** MCP server: it drives a **real, visible Firefox** (and, for hardened targets, a **stealth Chromium via nodriver**) to **bypass anti-bot detection** and automate real sites — Cloudflare challenges, login walls, forms, job search, and more — while looking like a normal human user.
+This repository is a **stealth browsing** MCP server: it drives a **real Firefox** (and, for hardened targets, a **stealth Chromium via nodriver**) to **bypass anti-bot detection** and automate real sites — Cloudflare challenges, login walls, forms, job search, and more — while looking like a normal human user.
 
 - **Stealth browsing**: real system Firefox/Chromium with a genuine fingerprint (UA, fonts, TLS, plugins). No fake `window.chrome` or UA spoofing.
 - **Anti-bot bypass**: patches `navigator.webdriver`, hides the remote-control cue, humanizes typing/clicking, uses persistent profiles, and can solve Cloudflare managed challenges with nodriver.
-- **Two engines**: Firefox (default, visible) + Chromium/nodriver (stealth) for tougher challenges.
+- **Two engines**: Firefox (default) + Chromium/nodriver (stealth) for tougher challenges.
 - **Ready-to-use MCP**: clone, `npm ci`, add the config snippet, and any LLM can call the tools.
 
 ## What this repo does (at a glance)
 
-- Automates a visible browser over MCP (stdio) with ~17 focused tools.
+- Automates a browser over MCP (stdio) with ~17 focused tools.
 - Detects and solves Cloudflare/anti-bot challenges (nodriver Chromium).
 - Handles CAPTCHAs and human-verification flows (wait, then hand off if needed).
 - Keeps passwords safe: Chromium solves use ephemeral profiles deleted after each run.
@@ -28,7 +28,7 @@ The MCP process communicates over stdio. A persistent local daemon owns the Fire
 - Use a persistent Firefox profile so site sessions can remain available between runs.
 - **Anti-bot resistance** — drives a real system Firefox with a genuine fingerprint (user agent, fonts, TLS, plugins). It reduces automation indicators. Hardened challenges (e.g. Cloudflare managed interstitials) are detected and can be solved with the Chromium/nodriver engine. Results vary by site, region, browser version, and detector version.
 - **CAPTCHA and human-verification handling** — automatically detects verification interstitials (Cloudflare "Just a moment", "Verify you are human", reCAPTCHA/hCaptcha prompts, security checks). Simple challenges are waited out and re-checked; harder ones can be solved with `browser_chromium_solve`.
-- **Two engines** — Firefox (default, visible) and Chromium/nodriver (stealth) for harder challenges.
+- **Two engines** — Firefox (default) and Chromium/nodriver (stealth) for harder challenges.
 - **Ephemeral Chromium profiles** — challenge solves use a temp profile under `/tmp/opencode` that is deleted after the run; no passwords or sessions persist.
 
 ## Requirements
@@ -36,7 +36,7 @@ The MCP process communicates over stdio. A persistent local daemon owns the Fire
 - Node.js 22.12 or newer.
 - Firefox installed on the host.
 - Python 3.10+ with `nodriver` and Chrome for Testing (for Chromium challenge solving).
-- A desktop session for the visible browser window.
+- A desktop session for the browser window.
 
 ## Install
 
@@ -82,7 +82,7 @@ When not specified, the agent should ask: (1) Firefox or nodriver Chromium? (2) 
 
 This server can navigate websites, read page content, run page JavaScript, and interact with forms using the configured Firefox profile. That profile may contain signed-in sessions and cookies. Keep the MCP server local and only connect trusted clients.
 
-The browser window is visible to the user. The screenshot tool refuses to capture a page with a visible password field unless its explicit override is used with user approval. CAPTCHAs and other human verifications are detected and handled; review actions before submitting applications, purchases, or other consequential forms.
+The screenshot tool refuses to capture a page with a password field unless its explicit override is used with user approval. CAPTCHAs and other human verifications are detected and handled; review actions before submitting applications, purchases, or other consequential forms.
 
 Chromium challenge solves use an ephemeral profile under `/tmp/opencode` that is deleted immediately after the run, so no passwords, cookies, or sessions persist between solves. Firefox keeps a dedicated persistent profile; disable its password manager if you do not want credentials stored.
 

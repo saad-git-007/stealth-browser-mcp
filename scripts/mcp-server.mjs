@@ -54,7 +54,7 @@ const server = new McpServer({
   version: '2.0.0',
 }, {
   instructions: [
-    'Controls the user\'s REAL visible Firefox (stealth: navigator.webdriver=false, remote-control banner hidden, humanized typing/clicking, persistent cookies/profile).',
+    'Controls the user\'s REAL Firefox (stealth: navigator.webdriver=false, remote-control banner hidden, humanized typing/clicking, persistent cookies/profile).',
     'Flow: browser_start → browser_open-url → verify with browser_text / browser_screenshot → interact with browser_click / browser_type / browser_fill.',
     'Page-side diagnostic sample: browser_fingerprint. Passing checks do not mean a site cannot detect or block automation.',
     'Two engines are available: Firefox (default, visible) and Chromium (stealth) for harder challenges. Use browser_chromium_solve(url) to attempt a Cloudflare/anti-bot challenge with Chromium.',
