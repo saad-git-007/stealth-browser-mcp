@@ -2,6 +2,9 @@
   "name": "stealth-browser-mcp",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --test scripts/*.test.mjs"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "puppeteer-core": "^25.16.0",

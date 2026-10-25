@@ -19,6 +19,7 @@ import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { detectHumanVerification, isOwnedFirefoxArgv, requiresManualVerification } from './page-signals.mjs';
 
 const PORT = parseInt(process.env.BROWSER_USE_PORT || '9222', 10);
 const WS_URL = `ws://127.0.0.1:${PORT}/session`;
@@ -110,10 +111,8 @@ function findDebugPids() {
   const pids = [];
   for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p))) {
     try {
-      const comm = fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim();
-      if (comm !== 'firefox') continue;
-      const cmd = fs.readFileSync(`/proc/${pid}/cmdline`).toString().replace(/\0/g, ' ');
-      if (cmd.includes(`remote-debugging-port=${PORT}`)) pids.push(parseInt(pid, 10));
+      const args = fs.readFileSync(`/proc/${pid}/cmdline`).toString().split('\0').filter(Boolean);
+      if (isOwnedFirefoxArgv(args, PORT, PROFILE)) pids.push(parseInt(pid, 10));
     } catch { /* race */ }
   }
   return pids;
@@ -126,6 +125,10 @@ async function killDebug() {
     await sleep(500);
   }
   for (const p of findDebugPids()) { try { process.kill(p, 'SIGKILL'); } catch {} }
+  for (let i = 0; i < 10; i++) {
+    if (!findDebugPids().length) return pids.length;
+    await sleep(200);
+  }
   return pids.length;
 }
 
@@ -296,12 +299,46 @@ async function humanClick(page, selOrText) {
   const isElement = el && await el.evaluate(e => e instanceof Element).catch(() => false);
   if (!isElement) throw new Error(`click: no element for ${selOrText}`);
   await el.evaluate(e => e.scrollIntoView({ block: 'center', behavior: 'instant' }));
-  const box = await el.evaluate(e => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
-  const jitter = { x: box.x + box.w / 2 + rnd(-0.18, 0.18) * box.w, y: box.y + box.h / 2 + rnd(-0.18, 0.18) * box.h };
-  await humanClickPoint(page, jitter);
+
+  // hit-test helper: is the click point still on the target (or a relative)?
+  const coverAt = (x, y) => page.evaluate((e, px, py) => {
+    const hit = document.elementFromPoint(px, py);
+    if (!hit) return { covered: false };
+    if (hit === e || hit.contains(e) || e.contains(hit)) return { covered: false };
+    return {
+      covered: true,
+      tag: hit.tagName.toLowerCase(),
+      id: hit.id || undefined,
+      src: hit.tagName === 'IFRAME' ? (hit.getAttribute('src') || '').slice(0, 140) : undefined,
+      text: (hit.innerText || '').trim().slice(0, 80) || undefined,
+    };
+  }, el, Math.round(x), Math.round(y));
+  const coverErr = c => new Error(
+    `click: target covered by <${c.tag}${c.id ? '#' + c.id : ''}>${c.src ? ' iframe src=' + c.src : c.text ? ` "${c.text}"` : ''} — dismiss the overlay first, or click through another path`);
+  const rectOf = () => el.evaluate(e => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+
+  let jitter, note;
+  for (let attempt = 0; ; attempt++) {
+    const box = await rectOf();
+    jitter = { x: box.x + box.w / 2 + rnd(-0.18, 0.18) * box.w, y: box.y + box.h / 2 + rnd(-0.18, 0.18) * box.h };
+    const pre = await coverAt(jitter.x, jitter.y);
+    if (pre.covered) throw coverErr(pre);
+    await humanClickPoint(page, jitter);
+    // the pointer travel takes seconds — the target may have moved (re-render,
+    // lazy layout). If it drifted, re-approach once; after that, click anyway
+    // but report the drift so the caller can verify the effect.
+    const fresh = await rectOf();
+    const drift = Math.hypot(fresh.x + fresh.w / 2 - jitter.x, fresh.y + fresh.h / 2 - jitter.y);
+    if (drift <= 20 || attempt >= 1) {
+      if (drift > 20) note = `target shifted ${Math.round(drift)}px during pointer travel — verify the click landed`;
+      const post = await coverAt(jitter.x, jitter.y);
+      if (post.covered) throw coverErr(post);
+      break;
+    }
+  }
   await page.mouse.down(); await sleepMs(rnd(50, 140)); await page.mouse.up();
   await sleepMs(rnd(200, 500));
-  return { clicked: selOrText, at: jitter };
+  return { clicked: selOrText, at: jitter, ...(note ? { note } : {}) };
 }
 
 // ---------------------------------------------------------------- form fill
@@ -426,14 +463,19 @@ const FP_FN = () => {
 };
 
 // --- Cloudflare/queue interstitial patience: wait it out instead of failing ---
-const isCfChallengeText = (t) => /just a moment|verify you are human|checking your browser|attention required|enable javascript and cookies to continue/i.test(t.slice(0, 3000));
 async function waitOutChallenge(page, maxSec = 30) {
   const t0 = Date.now();
   let challenged = false;
   while (Date.now() - t0 < maxSec * 1000) {
-    const text = await page.evaluate('document.body.innerText').catch(() => '');
-    if (!isCfChallengeText(text)) return { challenged, waited: Math.round((Date.now() - t0) / 1000) };
+    const [title, text] = await Promise.all([
+      page.title().catch(() => ''),
+      page.evaluate('document.body.innerText').catch(() => ''),
+    ]);
+    if (!detectHumanVerification(title, text)) return { challenged, waited: Math.round((Date.now() - t0) / 1000) };
     challenged = true;
+    if (requiresManualVerification(title, text)) {
+      return { challenged: true, waited: Math.round((Date.now() - t0) / 1000), stillChallenged: true, requiresUserAction: true };
+    }
     await sleep(rnd(1500, 2800));
   }
   return { challenged: true, waited: maxSec, stillChallenged: true };
@@ -472,12 +514,29 @@ async function runCommand(cmd, args, flags = {}) {
       await sleep(700);
       await markActive(page);
       const cf = await waitOutChallenge(page);
+      // optional readiness gate: open <url> --wait <selector> [--waitMs N]
+      let waitFound;
+      if (flags.wait) {
+        const ms = parseInt(flags.waitMs || '10000', 10);
+        try {
+          await page.waitForFunction(WAIT_FN, { timeout: ms }, String(flags.wait));
+          waitFound = true;
+        } catch {
+          waitFound = false; // navigation succeeded; the selector just never showed up
+        }
+      }
+      const requestedPreview = Number.parseInt(flags.previewChars ?? '800', 10);
+      const previewChars = Number.isFinite(requestedPreview) ? Math.min(10000, Math.max(0, requestedPreview)) : 800;
       return {
         url: page.url(), title: await page.title(),
-        text: truncate(await page.evaluate('document.body.innerText'), 800),
+        text: truncate(await page.evaluate('document.body.innerText'), previewChars),
+        ...(flags.wait ? { waitSelector: String(flags.wait), waitFound } : {}),
         cfChallenge: cf.challenged || undefined,
+        challengeType: cf.challenged ? 'human_verification' : undefined,
         cfWaitedSec: cf.challenged ? cf.waited : undefined,
         stillChallenged: cf.stillChallenged || undefined,
+        requiresUserAction: cf.stillChallenged || undefined,
+        nextStep: cf.stillChallenged ? 'Complete any verification manually in the visible browser, then continue. The MCP does not solve or bypass verification checks.' : undefined,
       };
     }
     case 'data': { // open a data: URL (used for throwaway form tests)
@@ -521,10 +580,10 @@ async function runCommand(cmd, args, flags = {}) {
     case 'fingerprint': {
       const page = await activePage(browser);
       const fp = await page.evaluate(FP_FN);
-      const verdict = fp.issues.length === 0
-        ? 'clean — the page JS sees a normal Firefox user'
-        : `issues detectable by page JS: ${fp.issues.join('; ')}`;
-      return { url: page.url(), stealth: verdict, issues: fp.issues, details: fp };
+      const assessment = fp.issues.length === 0
+        ? 'sample checks passed; this is not a guarantee that sites cannot detect or block automation'
+        : `sample checks found signals: ${fp.issues.join('; ')}`;
+      return { url: page.url(), assessment, issues: fp.issues, details: fp };
     }
     case 'press': {
       const key = pos[0];
@@ -740,14 +799,22 @@ async function startDaemon() {
   const self = path.join(new URL('.', import.meta.url).pathname, path.basename(new URL(import.meta.url).pathname));
   const child = spawn(process.execPath, ['--no-warnings', self, 'serve'], { detached: true, stdio: ['ignore', logFd, logFd] });
   child.unref();
+  console.error(`start: daemon spawned (pid ${child.pid}), waiting for socket…`);
   const t0 = Date.now();
+  let lastReport = 0;
   while (Date.now() - t0 < 60000) {
     if (fs.existsSync(SOCK + '.ready')) {
       const r = await request('ping', [], {}, 8000);
       if (r && r.pong) return true;
     }
+    if (Date.now() - lastReport > 10000) {
+      lastReport = Date.now();
+      console.error(`start: still waiting after ${Math.round((Date.now() - t0) / 1000)}s (log: ${LOG})`);
+    }
     await sleep(500);
   }
+  console.error('start: daemon did not become ready in 60s — last log lines:\n' +
+    fs.readFileSync(LOG, 'utf8').trim().split('\n').slice(-8).join('\n'));
   return false;
 }
 

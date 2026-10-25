@@ -92,4 +92,23 @@ The browser window is visible to the user. The screenshot tool refuses to captur
 scripts/
   browser.mjs      Persistent Firefox daemon and command-line client
   mcp-server.mjs   MCP stdio server exposing the browser tools
+  page-signals.mjs Challenge detection and owned-process matching helpers
+  page-signals.test.mjs Regression tests for challenge and process signals
 ```
+
+## Navigation and verification behavior
+
+`browser_open` accepts an optional `previewChars` value (0–10,000; default 800) to control the returned page-text preview. It can also wait for a CSS selector using `wait` and `waitMs`. The full visible page text remains available through `browser_text`.
+
+The browser detects common human-verification pages, including “Additional Verification Required.” If a manual check remains, `browser_open` returns a clear user-action handoff and leaves the visible browser on that page. Complete the check yourself in the browser before continuing; this project does not solve or bypass verification checks. The fingerprint tool reports only a limited sample of page-side signals and cannot establish that a site will allow automation.
+
+Use a specific selector when extracting repeated result cards. Overlapping or similar-but-not-identical cards can otherwise look like duplicates.
+
+## Tests
+
+```bash
+npm ci
+npm test
+```
+
+GitHub Actions runs the test suite on Node.js 22.12.

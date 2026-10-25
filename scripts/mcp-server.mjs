@@ -55,8 +55,9 @@ const server = new McpServer({
   instructions: [
     'Controls the user\'s REAL visible Firefox (stealth: navigator.webdriver=false, remote-control banner hidden, humanized typing/clicking, persistent cookies/profile).',
     'Flow: browser_start → browser_open-url → verify with browser_text / browser_screenshot → interact with browser_click / browser_type / browser_fill.',
-    'Fingerprint self-audit: browser_fingerprint.',
-    'Ask the user BEFORE submitting applications or payment forms. Never solve CAPTCHAs — ask the user.',
+    'Page-side diagnostic sample: browser_fingerprint. Passing checks do not mean a site cannot detect or block automation.',
+    'If a human verification page appears, stop and let the user complete it in the visible browser. Never solve or bypass verification checks.',
+    'Ask the user before submitting applications or payment forms.',
   ].join('\n'),
 });
 
@@ -71,11 +72,16 @@ reg('browser_restart', 'Recycle ONLY the browser (fresh session pool), keep daem
 reg('browser_tabs', 'List open tabs of the browser, each with its index and its current page URL/title.', {}, () => callBrowser('tabs').then(JSON_OK));
 
 // ----- navigation & reading -----
-reg('browser_open', 'Navigate the active tab to a URL and return {url, title, text}. Waits out Cloudflare-style interstitials automatically.', { url: z.string() },
-  (a) => callBrowser('open', [a.url]).then(JSON_OK));
+reg('browser_open', 'Navigate the active tab and return {url, title, text}. Waits briefly for browser checks; if human verification remains, returns a user-action handoff. Never solves verification checks. Set previewChars (default 800, max 10000) and optionally wait for a CSS selector with waitMs (default 10000).', { url: z.string(), previewChars: z.number().int().min(0).max(10000).optional(), wait: z.string().optional(), waitMs: z.number().int().min(0).max(120000).optional() },
+  (a) => {
+    const argv = [a.url];
+    if (a.previewChars !== undefined) argv.push('--previewChars', String(a.previewChars));
+    if (a.wait) argv.push('--wait', a.wait, '--waitMs', String(a.waitMs ?? 10000));
+    return callBrowser('open', argv).then(JSON_OK);
+  });
 reg('browser_text', 'Full visible text of the active page (≤6000 chars). Use to read content.', {},
   () => callBrowser('text').then(JSON_OK));
-reg('browser_extract', 'Extract innerText (or an attribute) of all elements matching a CSS selector.', {
+reg('browser_extract', 'Extract innerText (or an attribute) of all elements matching a CSS selector. Prefer one specific selector for repeated result cards; overlapping selectors or similar-but-not-identical cards can produce near-duplicates.', {
   selector: z.string(), attr: z.string().optional(), limit: z.number().optional(),
 }, (a) => {
   const argv = [a.selector];
@@ -117,7 +123,7 @@ reg('browser_screenshot', 'PNG screenshot of the active tab. Returns path + the 
       return out;
     });
   });
-reg('browser_fingerprint', 'Stealth self-audit: run the same JS checks bot-detection run on the page (webdriver flag, chrome object, plugins, WebGL…). Should report zero issues.', {},
+reg('browser_fingerprint', 'Run a limited page-side diagnostic sample (webdriver flag, plugins, WebGL, etc.). Passing checks do not guarantee that a site cannot detect or block automation.', {},
   () => callBrowser('fingerprint').then(JSON_OK));
 
 process.stderr.write('browser-use MCP server starting (tools talk to the Firefox daemon)…\n');
