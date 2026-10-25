@@ -16,6 +16,7 @@ import path from 'node:path';
 
 const SELF_DIR = path.dirname(new URL(import.meta.url).pathname);
 const BROWSER = path.join(SELF_DIR, 'browser.mjs');
+const CHALLENGE_SOLVER = path.join(SELF_DIR, 'nodriver-solve.py');
 const SHOTS_DIR = '/tmp/opencode';
 
 function callBrowser(cmd, argv = [], timeoutSec = 300) {
@@ -56,7 +57,10 @@ const server = new McpServer({
     'Controls the user\'s REAL visible Firefox (stealth: navigator.webdriver=false, remote-control banner hidden, humanized typing/clicking, persistent cookies/profile).',
     'Flow: browser_start → browser_open-url → verify with browser_text / browser_screenshot → interact with browser_click / browser_type / browser_fill.',
     'Page-side diagnostic sample: browser_fingerprint. Passing checks do not mean a site cannot detect or block automation.',
-    'If a human verification page appears, stop and let the user complete it in the visible browser. Never solve or bypass verification checks.',
+    'Two engines are available: Firefox (default, visible) and Chromium (stealth) for harder challenges. Use browser_chromium_solve(url) to attempt a Cloudflare/anti-bot challenge with Chromium.',
+    'Chromium solves use an ephemeral profile that is deleted after the run; no passwords or sessions persist.',
+    'When the user does not specify, ask before acting: (1) Firefox or nodriver Chromium? (2) hidden virtual screen (xvfb) or real desktop display?',
+    'If a challenge cannot be solved automatically, stop and let the user complete it in the visible browser.',
     'Ask the user before submitting applications or payment forms.',
   ].join('\n'),
 });
@@ -125,6 +129,19 @@ reg('browser_screenshot', 'PNG screenshot of the active tab. Returns path + the 
   });
 reg('browser_fingerprint', 'Run a limited page-side diagnostic sample (webdriver flag, plugins, WebGL, etc.). Passing checks do not guarantee that a site cannot detect or block automation.', {},
   () => callBrowser('fingerprint').then(JSON_OK));
+
+// ----- chromium/nodriver challenge solver -----
+reg('browser_chromium_solve', 'Solve a hardened challenge (Cloudflare, anti-bot) using a stealth nodriver/Chromium engine. Launches Chrome, navigates to url, waits up to waitMs for the challenge to resolve, returns {solved, title, text}. Use when Firefox hits a verification interstitial.', { url: z.string(), waitMs: z.number().int().min(5000).max(120000).optional() },
+  (a) => new Promise((resolve) => {
+    execFile('python3', [CHALLENGE_SOLVER, a.url, String(a.waitMs ?? 30000)],
+      { timeout: (a.waitMs ?? 30000) + 60000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, DISPLAY: ':1', XAUTHORITY: '/run/user/1000/gdm/Xauthority' } }, (err, stdout, stderr) => {
+        if (stdout) {
+          const text = stdout.trim();
+          try { return resolve(JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1))); } catch {}
+        }
+        resolve({ ok: false, error: (err && err.message || stderr || 'no output').split('\n').slice(0, 3).join(' | ') });
+      });
+  }).then((r) => ({ content: [{ type: 'text', text: JSON.stringify(r, null, 2) }], isError: r && r.ok === false })));
 
 process.stderr.write('browser-use MCP server starting (tools talk to the Firefox daemon)…\n');
 await server.connect(new StdioServerTransport());

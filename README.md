@@ -1,6 +1,6 @@
 # Stealth Browser MCP
 
-A local [Model Context Protocol](https://modelcontextprotocol.io/) server for automating a real, visible Firefox browser through WebDriver BiDi. It provides focused tools for navigation, page reading, form interaction, screenshots, tab management, and browser fingerprint diagnostics.
+A local [Model Context Protocol](https://modelcontextprotocol.io/) server for automating a real, visible Firefox browser through WebDriver BiDi, plus a stealth Chromium/nodriver engine for hardened challenges. It provides focused tools for navigation, page reading, form interaction, screenshots, tab management, browser fingerprint diagnostics, and anti-bot evasion.
 
 The MCP process communicates over stdio. A persistent local daemon owns the Firefox connection, so MCP calls and the command-line client use the same browser session.
 
@@ -12,11 +12,16 @@ The MCP process communicates over stdio. A persistent local daemon owns the Fire
 - Capture screenshots, with a safeguard that blocks capture while a password field is visible unless explicitly allowed.
 - Inspect the current page's browser fingerprint signals.
 - Use a persistent Firefox profile so site sessions can remain available between runs.
+- **Anti-bot resistance** — drives a real system Firefox with a genuine fingerprint (user agent, fonts, TLS, plugins). It reduces automation indicators. Hardened challenges (e.g. Cloudflare managed interstitials) are detected and can be solved with the Chromium/nodriver engine. Results vary by site, region, browser version, and detector version.
+- **CAPTCHA and human-verification handling** — automatically detects verification interstitials (Cloudflare "Just a moment", "Verify you are human", reCAPTCHA/hCaptcha prompts, security checks). Simple challenges are waited out and re-checked; harder ones can be solved with `browser_chromium_solve`.
+- **Two engines** — Firefox (default, visible) and Chromium/nodriver (stealth) for harder challenges.
+- **Ephemeral Chromium profiles** — challenge solves use a temp profile under `/tmp/opencode` that is deleted after the run; no passwords or sessions persist.
 
 ## Requirements
 
-- Node.js 22.12 or newer (required by the current Puppeteer browser tooling dependencies).
-- Firefox installed on the host. The launcher checks common Snap and system Firefox locations.
+- Node.js 22.12 or newer.
+- Firefox installed on the host.
+- Python 3.10+ with `nodriver` and Chrome for Testing (for Chromium challenge solving).
 - A desktop session for the visible browser window.
 
 ## Install
@@ -25,11 +30,12 @@ The MCP process communicates over stdio. A persistent local daemon owns the Fire
 git clone https://github.com/saad-git-007/stealth-browser-mcp.git
 cd stealth-browser-mcp
 npm ci
+pip install --break-system-packages nodriver
 ```
 
 ## Configure an MCP client
 
-Point your MCP client to `scripts/mcp-server.mjs` using an absolute path. For clients that use the standard `mcpServers` JSON shape:
+Point your MCP client to `scripts/mcp-server.mjs` using an absolute path:
 
 ```json
 {
@@ -42,73 +48,47 @@ Point your MCP client to `scripts/mcp-server.mjs` using an absolute path. For cl
 }
 ```
 
-Restart or reload the MCP client after saving its configuration. The server writes startup diagnostics to stderr; its stdout is reserved for MCP protocol messages.
+## Engines
 
-## Start the browser manually
+1. **Firefox (default)** — real system Firefox over WebDriver BiDi. Best for everyday browsing, forms, and signed-in sessions.
+2. **Chromium (stealth)** — Chrome for Testing with nodriver. More robust against hardened anti-bot/Cloudflare challenges. Use `browser_chromium_solve(url)` (MCP) or `python3 scripts/nodriver-solve.py <url>` (CLI).
 
-The MCP server starts the browser when needed. You can also use the CLI directly:
+When not specified, the agent should ask: (1) Firefox or nodriver Chromium? (2) hidden virtual screen (xvfb) or real desktop display?
 
-```bash
-node scripts/browser.mjs start
-node scripts/browser.mjs status
-node scripts/browser.mjs tabs
-node scripts/browser.mjs stop
-```
-
-The CLI prints JSON. Run `node scripts/browser.mjs` without a command to see the available commands.
-
-## Configuration
-
-These environment variables can be set in the MCP client's server configuration:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `BROWSER_USE_PORT` | `9222` | Local Firefox WebDriver BiDi port. |
-| `BROWSER_USE_SOCK` | `/tmp/opencode/browser-use.sock` | Unix socket used by the daemon and CLI. |
-| `BROWSER_USE_LOG` | `/tmp/opencode/browser-use-daemon.log` | Daemon log path. |
-| `BROWSER_USE_PROFILE` | `~/snap/firefox/common/browser-use-profile` | Persistent Firefox profile directory. |
-| `BROWSER_IDLE_TIMEOUT` | `0` | Optional daemon idle timeout in seconds; `0` leaves it running. |
-
-## Firefox automation indicators
-
-The server uses the installed Firefox engine and does not impersonate Chromium or rewrite the user agent. It makes several Firefox-specific adjustments that reduce visible or script-readable automation indicators:
+## Stealth and anti-bot evasion
 
 - A preload makes `navigator.webdriver` report `false` to page JavaScript.
-- The dedicated profile enables Firefox’s `browser.chrome.disableRemoteControlCueForTests` preference, and its `userChrome.css` hides the URL-bar remote-control icon. The launcher sets `MOZ_IN_AUTOMATION=1` so Firefox applies that preference. This hides the “under remote control” / robot cue in the browser UI; Firefox remains under automation control.
+- The dedicated profile enables Firefox’s `browser.chrome.disableRemoteControlCueForTests` preference, and `userChrome.css` hides the URL-bar remote-control icon.
 - Pointer movement and typing use human-paced delays.
-- Firefox runs with a persistent, dedicated profile, preserving its own site sessions and cookies.
-
-These adjustments do not guarantee that websites cannot detect automation or override a site’s restrictions. The project does not solve CAPTCHAs or claim to evade bot protection.
+- Firefox runs with a persistent, dedicated profile.
+- Real system Firefox is used; we do not fabricate a fake `window.chrome`.
+- **CAPTCHA / challenge handling**: verification interstitials are detected. Simple ones are waited out; harder ones can be solved with the Chromium/nodriver engine on a real or virtual display.
 
 ## Safety and privacy
 
-This server can navigate websites, read page content, run page JavaScript, and interact with forms using the configured Firefox profile. That profile may contain signed-in sessions and cookies. Keep the MCP server local and only connect trusted clients. Do not provide secrets to page JavaScript or expose profile data.
+This server can navigate websites, read page content, run page JavaScript, and interact with forms using the configured Firefox profile. That profile may contain signed-in sessions and cookies. Keep the MCP server local and only connect trusted clients.
 
-The browser window is visible to the user. The screenshot tool refuses to capture a page with a visible password field unless its explicit override is used with user approval. If a CAPTCHA or other human verification appears, solve it in the visible browser yourself; this project does not automate CAPTCHA solving. Review actions before submitting applications, purchases, or other consequential forms.
+The browser window is visible to the user. The screenshot tool refuses to capture a page with a visible password field unless its explicit override is used with user approval. CAPTCHAs and other human verifications are detected and handled; review actions before submitting applications, purchases, or other consequential forms.
+
+Chromium challenge solves use an ephemeral profile under `/tmp/opencode` that is deleted immediately after the run, so no passwords, cookies, or sessions persist between solves. Firefox keeps a dedicated persistent profile; disable its password manager if you do not want credentials stored.
+
+## Toolbox
+
+| Group | Tools |
+|---|---|
+| Browser management | `browser_start`, `browser_status`, `browser_stop`, `browser_restart`, `browser_tabs` |
+| Navigation & reading | `browser_open`, `browser_text`, `browser_extract`, `browser_wait` |
+| Interaction | `browser_click`, `browser_type`, `browser_fill`, `browser_press` |
+| Inspection | `browser_js`, `browser_screenshot`, `browser_fingerprint` |
+| Challenge solving | `browser_chromium_solve` |
 
 ## Project structure
 
 ```text
 scripts/
-  browser.mjs      Persistent Firefox daemon and command-line client
-  mcp-server.mjs   MCP stdio server exposing the browser tools
-  page-signals.mjs Challenge detection and owned-process matching helpers
-  page-signals.test.mjs Regression tests for challenge and process signals
+  browser.mjs            Persistent Firefox daemon and command-line client
+  mcp-server.mjs         MCP stdio server exposing the browser tools
+  page-signals.mjs       Challenge/CAPTCHA detection helpers
+  nodriver-solve.py      Chromium/nodriver challenge solver
+  chromium-solve.mjs     (legacy) puppeteer stealth solver
 ```
-
-## Navigation and verification behavior
-
-`browser_open` accepts an optional `previewChars` value (0–10,000; default 800) to control the returned page-text preview. It can also wait for a CSS selector using `wait` and `waitMs`. The full visible page text remains available through `browser_text`.
-
-The browser detects common human-verification pages, including “Additional Verification Required.” If a manual check remains, `browser_open` returns a clear user-action handoff and leaves the visible browser on that page. Complete the check yourself in the browser before continuing; this project does not solve or bypass verification checks. The fingerprint tool reports only a limited sample of page-side signals and cannot establish that a site will allow automation.
-
-Use a specific selector when extracting repeated result cards. Overlapping or similar-but-not-identical cards can otherwise look like duplicates.
-
-## Tests
-
-```bash
-npm ci
-npm test
-```
-
-GitHub Actions runs the test suite on Node.js 22.12.
