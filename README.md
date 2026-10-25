@@ -1,6 +1,20 @@
 # Stealth Browser MCP
 
-A local [Model Context Protocol](https://modelcontextprotocol.io/) server for automating a real, visible Firefox browser through WebDriver BiDi, plus a stealth Chromium/nodriver engine for hardened challenges. It provides focused tools for navigation, page reading, form interaction, screenshots, tab management, browser fingerprint diagnostics, and anti-bot evasion.
+**Stealth browser automation for AI agents (Claude, Codex, OpenCode, Cursor, and any MCP client).**
+
+This repository is a **stealth browsing** MCP server: it drives a **real, visible Firefox** (and, for hardened targets, a **stealth Chromium via nodriver**) to **bypass anti-bot detection** and automate real sites — Cloudflare challenges, login walls, forms, job search, and more — while looking like a normal human user.
+
+- **Stealth browsing**: real system Firefox/Chromium with a genuine fingerprint (UA, fonts, TLS, plugins). No fake `window.chrome` or UA spoofing.
+- **Anti-bot bypass**: patches `navigator.webdriver`, hides the remote-control cue, humanizes typing/clicking, uses persistent profiles, and can solve Cloudflare managed challenges with nodriver.
+- **Two engines**: Firefox (default, visible) + Chromium/nodriver (stealth) for tougher challenges.
+- **Ready-to-use MCP**: clone, `npm ci`, add the config snippet, and any LLM can call the tools.
+
+## What this repo does (at a glance)
+
+- Automates a visible browser over MCP (stdio) with ~17 focused tools.
+- Detects and solves Cloudflare/anti-bot challenges (nodriver Chromium).
+- Handles CAPTCHAs and human-verification flows (wait, then hand off if needed).
+- Keeps passwords safe: Chromium solves use ephemeral profiles deleted after each run.
 
 The MCP process communicates over stdio. A persistent local daemon owns the Firefox connection, so MCP calls and the command-line client use the same browser session.
 
@@ -71,6 +85,38 @@ This server can navigate websites, read page content, run page JavaScript, and i
 The browser window is visible to the user. The screenshot tool refuses to capture a page with a visible password field unless its explicit override is used with user approval. CAPTCHAs and other human verifications are detected and handled; review actions before submitting applications, purchases, or other consequential forms.
 
 Chromium challenge solves use an ephemeral profile under `/tmp/opencode` that is deleted immediately after the run, so no passwords, cookies, or sessions persist between solves. Firefox keeps a dedicated persistent profile; disable its password manager if you do not want credentials stored.
+
+## Main tools (MCP)
+
+| Tool | Purpose |
+|---|---|
+| `browser_start` / `status` / `stop` / `restart` / `tabs` | Browser lifecycle & tab listing |
+| `browser_open` / `text` / `extract` / `wait` | Navigate & read pages |
+| `browser_click` / `type` / `fill` / `press` | Humanized interaction |
+| `browser_js` / `screenshot` / `fingerprint` | Advanced inspection |
+| `browser_chromium_solve` | Solve Cloudflare/anti-bot challenges via nodriver Chromium |
+
+## Add this MCP to any LLM (ready to go)
+
+1. Clone & install:
+   ```bash
+   git clone https://github.com/saad-git-007/stealth-browser-mcp.git
+   cd stealth-browser-mcp
+   npm ci
+   pip install --break-system-packages nodriver
+   ```
+2. Add to your MCP client config:
+   ```json
+   {
+     "mcpServers": {
+       "browser-use": {
+         "command": "node",
+         "args": ["/absolute/path/to/stealth-browser-mcp/scripts/mcp-server.mjs"]
+       }
+     }
+   }
+   ```
+3. Restart the client — tools `browser_*` (including `browser_chromium_solve`) become available.
 
 ## Toolbox
 
