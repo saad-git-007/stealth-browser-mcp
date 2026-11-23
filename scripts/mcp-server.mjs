@@ -57,6 +57,8 @@ const server = new McpServer({
     'Controls the user\'s REAL Firefox (stealth: navigator.webdriver=false, remote-control banner hidden, humanized typing/clicking, persistent cookies/profile).',
     'Flow: browser_start → browser_open-url → verify with browser_text / browser_screenshot → interact with browser_click / browser_type / browser_fill.',
     'Page-side diagnostic sample: browser_fingerprint. Passing checks do not mean a site cannot detect or block automation.',
+    'IP-detection audit: browser_ip — reports the browser-visible public IP, the WebRTC-gathered candidates (host/srflx/relay; host candidates carry no local/private addresses thanks to profile prefs), and the machine-side IPs. Facts only; the public egress IP is inherent to the network.',
+    'IP-cap robustness: open() understands IP-cap structures (rate_limit/block/cooldown) and retries with backoff, honoring any suggested wait; the result reports {ipCap}. browser_chromium_solve (nodriver Chromium) retries IP-cap pages through the same mechanisms.',
     'Two engines are available: Firefox (default, visible) and Chromium (stealth) for harder challenges. Use browser_chromium_solve(url) to attempt a Cloudflare/anti-bot challenge with Chromium.',
     'Chromium solves use an ephemeral profile that is deleted after the run; no passwords or sessions persist.',
     'When the user does not specify, ask before acting: (1) Firefox or nodriver Chromium? (2) hidden virtual screen (xvfb) or real desktop display?',
@@ -76,12 +78,12 @@ reg('browser_restart', 'Recycle ONLY the browser (fresh session pool), keep daem
 reg('browser_tabs', 'List open tabs of the browser, each with its index and its current page URL/title.', {}, () => callBrowser('tabs').then(JSON_OK));
 
 // ----- navigation & reading -----
-reg('browser_open', 'Navigate the active tab and return {url, title, text}. Waits briefly for browser checks; if human verification remains, returns a user-action handoff. Never solves verification checks. Set previewChars (default 800, max 10000) and optionally wait for a CSS selector with waitMs (default 10000).', { url: z.string(), previewChars: z.number().int().min(0).max(10000).optional(), wait: z.string().optional(), waitMs: z.number().int().min(0).max(120000).optional() },
+reg('browser_open', 'Navigate the active tab and return {url, title, text}. Waits briefly for browser checks; if human verification remains, returns a user-action handoff. Never solves verification checks. If the site caps by IP (rate-limit/block page), retries with backoff and returns {ipCap} with the final state. Set previewChars (default 800, max 10000) and optionally wait for a CSS selector with waitMs (default 10000).', { url: z.string(), previewChars: z.number().int().min(0).max(10000).optional(), wait: z.string().optional(), waitMs: z.number().int().min(0).max(120000).optional() },
   (a) => {
     const argv = [a.url];
     if (a.previewChars !== undefined) argv.push('--previewChars', String(a.previewChars));
     if (a.wait) argv.push('--wait', a.wait, '--waitMs', String(a.waitMs ?? 10000));
-    return callBrowser('open', argv).then(JSON_OK);
+    return callBrowser('open', argv, 600).then(JSON_OK);
   });
 reg('browser_text', 'Full visible text of the active page (≤6000 chars). Use to read content.', {},
   () => callBrowser('text').then(JSON_OK));
@@ -129,9 +131,11 @@ reg('browser_screenshot', 'PNG screenshot of the active tab. Returns path + the 
   });
 reg('browser_fingerprint', 'Run a limited page-side diagnostic sample (webdriver flag, plugins, WebGL, etc.). Passing checks do not guarantee that a site cannot detect or block automation.', {},
   () => callBrowser('fingerprint').then(JSON_OK));
+reg('browser_ip', 'IP-detection audit: what the browser and the machine can see over the network. Reports the browser-visible public IP (the IP page JS fetches — what sites read), the WebRTC-gathered candidates (host/srflx/relay; webrtcLeaksLocalIP = true when a host candidate carries a local/private address), and the machine-side non-loopback interface IPs plus the machine public IP (publicIPMismatch when they differ). Facts only — routing and the public egress IP are not changed.', {},
+  () => callBrowser('ip').then(JSON_OK));
 
 // ----- chromium/nodriver challenge solver -----
-reg('browser_chromium_solve', 'Solve a hardened challenge (Cloudflare, anti-bot) using a stealth nodriver/Chromium engine. Launches Chrome, navigates to url, waits up to waitMs for the challenge to resolve, returns {solved, title, text}. Use when Firefox hits a verification interstitial.', { url: z.string(), waitMs: z.number().int().min(5000).max(120000).optional() },
+reg('browser_chromium_solve', 'Solve a hardened challenge (Cloudflare, anti-bot) using a stealth nodriver/Chromium engine. Launches Chrome, navigates to url, waits up to waitMs for the challenge to resolve, returns {solved, title, text}. Retries IP-cap pages (rate limits, unusual-traffic blocks, cooldowns) with backoff while waiting. Use when Firefox hits a verification interstitial or an IP-cap page.', { url: z.string(), waitMs: z.number().int().min(5000).max(120000).optional() },
   (a) => new Promise((resolve) => {
     execFile('python3', [CHALLENGE_SOLVER, a.url, String(a.waitMs ?? 30000)],
       { timeout: (a.waitMs ?? 30000) + 60000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, DISPLAY: ':1', XAUTHORITY: '/run/user/1000/gdm/Xauthority' } }, (err, stdout, stderr) => {

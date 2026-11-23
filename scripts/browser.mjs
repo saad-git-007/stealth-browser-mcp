@@ -13,13 +13,13 @@
 // and a mismatch giveaway on Firefox).
 
 import puppeteer from 'puppeteer-core';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { detectHumanVerification, isOwnedFirefoxArgv, requiresManualVerification } from './page-signals.mjs';
+import { classifyIPCap, detectHumanVerification, isOwnedFirefoxArgv, isPrivateOrLoopbackIP, requiresManualVerification } from './page-signals.mjs';
 
 const PORT = parseInt(process.env.BROWSER_USE_PORT || '9222', 10);
 const WS_URL = `ws://127.0.0.1:${PORT}/session`;
@@ -35,7 +35,34 @@ const FIREFOX_CANDIDATES = [
   '/usr/lib/firefox/firefox',
   '/usr/bin/firefox',
 ];
-const FIREFOX = FIREFOX_CANDIDATES.find(f => fs.existsSync(f));
+let _FIREFOX = null;
+// The `current` snap symlink can point at a revision whose bundled libc is
+// newer than the system one ("Couldn't load XPCOM", exit 255) — validate each
+// candidate by actually running `--version` and fall back to other revisions.
+function firefoxBinary() {
+  if (_FIREFOX !== null) return _FIREFOX;
+  const ok = (f) => {
+    try {
+      const r = spawnSync(f, ['--version'], { encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] });
+      return r.status === 0 && /firefox/i.test(r.stdout || '');
+    } catch { return false; }
+  };
+  const snapRevs = [];
+  try {
+    for (const d of fs.readdirSync('/snap/firefox')) {
+      if (d === 'current') continue;
+      for (const sub of ['usr/lib/firefox/firefox', 'usr/lib/firefox/firefox-bin']) {
+        const f = `/snap/firefox/${d}/${sub}`;
+        if (!snapRevs.includes(f)) snapRevs.push(f);
+      }
+    }
+  } catch { /* not a snap install */ }
+  _FIREFOX = snapRevs.filter(f => fs.existsSync(f) && ok(f))[0]
+    || FIREFOX_CANDIDATES.find(f => fs.existsSync(f) && ok(f))
+    || FIREFOX_CANDIDATES.find(f => fs.existsSync(f))
+    || null;
+  return _FIREFOX;
+}
 
 const HOME = os.homedir();
 
@@ -92,6 +119,16 @@ user_pref("toolkit.telemetry.unified", false);
 user_pref("app.shield.optoutstudies.enabled", false);
 user_pref("browser.warnOnQuit", false);
 user_pref("browser.startup.homepage_override.mstone", "ignore");
+// IP-detection hardening: WebRTC host candidates must not carry this machine's
+// local/LAN addresses. Stock \`.local\` obfuscation stays on; the public egress IP
+// is still observable over the wire and via STUN reflexive candidates — see the
+// browser_ip audit and the README "Stealth" section for the tradeoffs.
+user_pref("media.peerconnection.ice.no_host", true);
+user_pref("media.peerconnection.ice.default_address_only", true); // no other address in the SDP
+// Fingerprint/detection hardening (Firefox-level; no chromedriver involved):
+user_pref("privacy.resistFingerprinting", true);          // uniform canvas/WebGL/fonts; per-site timezone+concurrency randomization
+user_pref("privacy.fingerprintingProtection.enabled", true); // hide platform details from probes
+user_pref("network.http.referer.XOriginPolicy", 2);       // stop cross-site Referer leakage
 `;
 // hides the #remote-control-icon cue in the URL bar even if the JS guard ever changes
 const CHROME_CSS = `/* browser-use: hide the Firefox remote-control cue */
@@ -104,6 +141,43 @@ function ensureProfile() {
   const chromeDir = path.join(PROFILE, 'chrome');
   fs.mkdirSync(chromeDir, { recursive: true });
   fs.writeFileSync(path.join(chromeDir, 'userChrome.css'), CHROME_CSS);
+}
+
+// --- machine network view for the IP-detection audit (daemon side) ---
+function machineLocalIPs() {
+  const out = [];
+  try {
+    for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+      for (const a of addrs || []) {
+        if (a && a.family === 'IPv4' && !a.internal && a.address && !out.some(x => x.address === a.address)) {
+          out.push({ interface: name, address: a.address });
+        }
+      }
+    }
+  } catch { /* best effort */ }
+  return out;
+}
+
+function fetchPublicIP(url, timeoutMs = 4000) {
+  const IPV4_RE = /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/;
+  return fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+    .then(async (r) => {
+      if (!r.ok) return null;
+      const ct = r.headers.get('content-type') || '';
+      if (ct.includes('json')) {
+        const j = await r.json().catch(() => null);
+        const v = j && (j.ip || j.data || j.body || j.result || j.text || '');
+        return typeof v === 'string' && v.trim() ? v.trim() : null;
+      }
+      const t = (await r.text()).trim();
+      return IPV4_RE.test(t) ? t : null;
+    })
+    .catch(() => null);
+}
+
+async function machinePublicIP() {
+  return (await fetchPublicIP('https://api.ipify.org/?format=json')) ||
+    (await fetchPublicIP('https://ifconfig.me'));
 }
 
 // --- kill leftover automation instances (only ours: debug port) ---
@@ -145,9 +219,10 @@ async function endpointReady(timeoutMs = 25000) {
   return false;
 }
 function launchFirefox() {
-  if (!FIREFOX) throw new Error('firefox binary not found');
+  const fx = firefoxBinary();
+  if (!fx) throw new Error('firefox binary not found');
   const env = sessionEnv();
-  const child = spawn(FIREFOX, [
+  const child = spawn(fx, [
     '--no-remote', '--profile', PROFILE,
     `--remote-debugging-port=${PORT}`,
     '--width', '1280', '--height', '900',
@@ -341,6 +416,14 @@ async function humanClick(page, selOrText) {
   return { clicked: selOrText, at: jitter, ...(note ? { note } : {}) };
 }
 
+// IP-cap surmount timing: human-like jittered backoff instead of a retry loop.
+// Honors any wait the page itself suggested (capped so the client stays in budget).
+function ipCapWaitMs(cap, retry) {
+  const base = [10000, 25000, 45000][Math.min(retry - 1, 2)];
+  const suggestedMs = cap && cap.suggestedMs ? Math.min(cap.suggestedMs, 90000) : base;
+  return Math.max(1000, suggestedMs) + Math.floor(Math.random() * 8000);
+}
+
 // ---------------------------------------------------------------- form fill
 
 const FILL_FN = (fields) => {
@@ -462,6 +545,45 @@ const FP_FN = () => {
   };
 };
 
+// --- IP-detection audit: what can page JS / sites see over the network? ---
+const IP_FN = async () => {
+  const withTimeout = (p, ms) => Promise.race([p, new Promise(r => setTimeout(() => r(null), ms))]);
+  const fetchIP = async (url) => {
+    try {
+      const r = await withTimeout(fetch(url), 3500);
+      if (!r) return null;
+      if ((r.headers.get('content-type') || '').includes('json')) {
+        const j = await r.json().catch(() => null);
+        const v = j && (j.ip || j.data || j.body || j.result || '');
+        return typeof v === 'string' && v.trim() ? v.trim() : null;
+      }
+      const t = (await r.text()).trim();
+      return /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/.test(t) ? t : null;
+    } catch { return null; }
+  };
+  const browserPublicIP = (await fetchIP('https://api.ipify.org/?format=json')) || (await fetchIP('https://ifconfig.me'));
+  const webrtc = await new Promise(resolve => {
+    const out = [];
+    let settled = false;
+    const finish = () => { if (!settled) { settled = true; resolve(out); } };
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: [
+        'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302',
+        'stun:stun3.l.google.com:19302', 'stun:stun4.l.google.com:19302',
+        'stun:stunserver.com:7788',
+      ] }] });
+      const t = setTimeout(() => { try { pc.close(); } catch { /* ignore */ } finish(); }, 3500);
+      pc.onicecandidate = (e) => {
+        if (e.candidate) out.push({ type: e.candidate.type, address: e.candidate.address || null, protocol: e.candidate.protocol });
+        else { clearTimeout(t); try { pc.close(); } catch { /* ignore */ } finish(); }
+      };
+      pc.createDataChannel('browser-use-ip-audit');
+      pc.createOffer().then(o => pc.setLocalDescription(o), () => {});
+    } catch { finish(); }
+  });
+  return { browserPublicIP: browserPublicIP || null, webrtcCandidates: webrtc };
+};
+
 // --- Cloudflare/queue interstitial patience: wait it out instead of failing ---
 async function waitOutChallenge(page, maxSec = 30) {
   const t0 = Date.now();
@@ -506,13 +628,40 @@ async function runCommand(cmd, args, flags = {}) {
     case 'open': {
       if (!pos[0]) throw new Error('usage: open <url>');
       const page = await activePage(browser);
-      try {
-        await page.goto(pos[0], { waitUntil: 'domcontentloaded', timeout: 45000 });
-      } catch {
-        await page.goto(pos[0], { waitUntil: 'load', timeout: 45000 });
+      const requestedPreview = Number.parseInt(flags.previewChars ?? '800', 10);
+      const previewChars = Number.isFinite(requestedPreview) ? Math.min(10000, Math.max(0, requestedPreview)) : 800;
+
+      // IP-cap robustness: sites that throttle or block by IP serve rate-limit,
+      // "unusual traffic" or cooldown pages. Understand the cap structure
+      // (classifyIPCap) and run the matching surmount mechanism — wait with
+      // backoff, honoring any wait the page suggests — instead of failing fast.
+      // ipCap reports the final state to the caller.
+      let ipCap = null;
+      let title = '', bodyText = '';
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await page.goto(pos[0], { waitUntil: 'domcontentloaded', timeout: 45000 });
+        } catch {
+          await page.goto(pos[0], { waitUntil: 'load', timeout: 45000 });
+        }
+        await sleep(700);
+        await markActive(page);
+        [title, bodyText] = await Promise.all([
+          page.title().catch(() => ''),
+          page.evaluate('document.body ? document.body.innerText : ""').catch(() => ''),
+        ]);
+        const cap = classifyIPCap(title, bodyText);
+        if (!cap) break;
+        if (attempt >= 3) {
+          ipCap = { detected: true, retriesUsed: attempt, type: cap.type,
+            note: 'site still appears to be capping by IP after retries — the IP cap may lift on its own or need manual resolution in the visible browser.' };
+          break;
+        }
+        ipCap = ipCap || { detected: true, type: cap.type,
+          note: 'site appears to be capping by IP (rate-limit/block page); retrying with backoff.' };
+        await sleep(ipCapWaitMs(cap, attempt + 1));
       }
-      await sleep(700);
-      await markActive(page);
+
       const cf = await waitOutChallenge(page);
       // optional readiness gate: open <url> --wait <selector> [--waitMs N]
       let waitFound;
@@ -525,12 +674,11 @@ async function runCommand(cmd, args, flags = {}) {
           waitFound = false; // navigation succeeded; the selector just never showed up
         }
       }
-      const requestedPreview = Number.parseInt(flags.previewChars ?? '800', 10);
-      const previewChars = Number.isFinite(requestedPreview) ? Math.min(10000, Math.max(0, requestedPreview)) : 800;
       return {
-        url: page.url(), title: await page.title(),
-        text: truncate(await page.evaluate('document.body.innerText'), previewChars),
+        url: page.url(), title,
+        text: truncate(bodyText, previewChars),
         ...(flags.wait ? { waitSelector: String(flags.wait), waitFound } : {}),
+        ...(ipCap ? { ipCap } : {}),
         cfChallenge: cf.challenged || undefined,
         challengeType: cf.challenged ? 'human_verification' : undefined,
         cfWaitedSec: cf.challenged ? cf.waited : undefined,
@@ -584,6 +732,31 @@ async function runCommand(cmd, args, flags = {}) {
         ? 'sample checks passed; this is not a guarantee that sites cannot detect or block automation'
         : `sample checks found signals: ${fp.issues.join('; ')}`;
       return { url: page.url(), assessment, issues: fp.issues, details: fp };
+    }
+    case 'ip': {
+      // IP-detection audit: what the browser/site can see over the network vs.
+      // what the machine reports. WebRTC host candidates must not carry local
+      // addresses (profile pref `media.peerconnection.ice.no_host`); the public
+      // egress IP is inherent to the network, so the tool reports and compares,
+      // it does not change routing.
+      const page = await activePage(browser);
+      const seen = await page.evaluate(IP_FN);
+      const machinePublic = await machinePublicIP();
+      const webrtc = seen.webrtcCandidates || [];
+      const mismatch = seen.browserPublicIP && machinePublic && seen.browserPublicIP !== machinePublic;
+      return {
+        browserPublicIP: seen.browserPublicIP || null,
+        machinePublicIP: machinePublic || null,
+        machineLocalIPs: machineLocalIPs(),
+        webrtcCandidates: webrtc,
+        webrtcLeaksLocalIP: webrtc.some(c => c.type === 'host' && isPrivateOrLoopbackIP(c.address)),
+        webrtcHostCandidates: webrtc.filter(c => c.type === 'host'),
+        ...(mismatch ? { publicIPMismatch: {
+          browserPublicIP: seen.browserPublicIP,
+          machinePublicIP: machinePublic,
+          note: 'the browser-visible egress IP differs from the machine egress IP — the browser may be routed over a different network than this machine (e.g. a VPN or proxy); confirm which IP a site will see',
+        } } : {}),
+      };
     }
     case 'press': {
       const key = pos[0];
@@ -680,7 +853,7 @@ async function runCommand(cmd, args, flags = {}) {
       return { pong: true, port: PORT, browser: !!S.browser };
     }
     default:
-      throw new Error(`unknown command "${cmd}" — try: start | status | tabs | open | text | extract | wait | click | type | fill | js | screenshot | restart | stop | ping`);
+      throw new Error(`unknown command "${cmd}" — try: start | status | tabs | open | text | extract | wait | click | type | fill | js | screenshot | ip | restart | stop | ping`);
   }
 }
 
@@ -859,6 +1032,7 @@ if (cmd === 'serve') {
       'type <selector> <text>',
       'fill <json>   (or: fill -  with JSON on stdin)',
       'js <expression> | screenshot <path> [--fullPage]',
+      'ip — IP/network detection audit (browser-visible IP + WebRTC candidates vs machine view)',
     ],
   }, 1);
 } else {
@@ -889,13 +1063,15 @@ if (cmd === 'serve') {
       out(r, r.ok ? 0 : 1);
       return;
     }
-    let r = await request(realCmd, args, flags);
+    // `open` retries rate-limit/block pages with backoff — give it headroom.
+    const reqTimeout = cmd === 'open' ? 480000 : 240000;
+    let r = await request(realCmd, args, flags, reqTimeout);
     if (!r.ok && /daemon not running/.test(r.error || '')) {
       if (realCmd === 'status') { out({ ok: true, running: false, port: PORT }); return; }
       if (realCmd === 'stop') { out({ ok: true, running: false, note: 'nothing to stop' }); return; }
       const up = await startDaemon();
       if (!up) fail(new Error('could not start daemon in 20s (see ' + LOG + ')'));
-      r = await request(realCmd, args, flags);
+      r = await request(realCmd, args, flags, reqTimeout);
     }
     if (cmd === 'start' && r.ok) r.started = true;
     out(r, r.ok ? 0 : 1);

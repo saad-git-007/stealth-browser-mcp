@@ -25,6 +25,8 @@ The MCP process communicates over stdio. A persistent local daemon owns the Fire
 - Click, type, fill fields, and press keys with human-paced input.
 - Capture screenshots, with a safeguard that blocks capture while a password field is visible unless explicitly allowed.
 - Inspect the current page's browser fingerprint signals.
+- Audit network/IP exposure: `browser_ip` reports the browser-visible public IP (what page JS fetches), the WebRTC-gathered candidates (local-IP leak detection), and the machine-side local/public IPs.
+- **IP-cap surmounting** — `open` understands IP-cap structures (rate limits, "too many requests", unusual-traffic blocks, cooldown pages) and runs the matching surmount mechanism: wait — honoring any wait the page itself suggests — and retry with human-like jittered backoff (up to 3 retries). The result reports `ipCap` with the final state (`type`: `rate_limit` / `block` / `cooldown`). `browser_chromium_solve` (nodriver Chromium) retries IP-cap pages through the same mechanisms.
 - Use a persistent Firefox profile so site sessions can remain available between runs.
 - **Anti-bot resistance** — drives a real system Firefox with a genuine fingerprint (user agent, fonts, TLS, plugins). It reduces automation indicators. Hardened challenges (e.g. Cloudflare managed interstitials) are detected and can be solved with the Chromium/nodriver engine. Results vary by site, region, browser version, and detector version.
 - **CAPTCHA and human-verification handling** — automatically detects verification interstitials (Cloudflare "Just a moment", "Verify you are human", reCAPTCHA/hCaptcha prompts, security checks). Simple challenges are waited out and re-checked; harder ones can be solved with `browser_chromium_solve`.
@@ -72,7 +74,9 @@ When not specified, the agent should ask: (1) Firefox or nodriver Chromium? (2) 
 ## Stealth and anti-bot evasion
 
 - A preload makes `navigator.webdriver` report `false` to page JavaScript.
-- The dedicated profile enables Firefox’s `browser.chrome.disableRemoteControlCueForTests` preference, and `userChrome.css` hides the URL-bar remote-control icon.
+- The dedicated profile enables Firefox's `browser.chrome.disableRemoteControlCueForTests` preference, and `userChrome.css` hides the URL-bar remote-control icon.
+- **WebRTC host-candidate suppression** — the profile sets `media.peerconnection.ice.no_host = true`, so WebRTC host candidates do not carry the machine's local/LAN addresses. Stock `.local` obfuscation stays on. The public egress IP is inherent to the network: it is visible to the site either way, so the tool reports it (`browser_ip`) rather than changing routing.
+- **IP-cap robustness** — `open` understands the structure of per-IP caps and runs the matching surmount mechanism — wait (honoring any suggested wait) and retry with human-like jittered backoff (max 3 retries) — instead of failing fast; the result reports `ipCap` when a cap was detected.
 - Pointer movement and typing use human-paced delays.
 - Firefox runs with a persistent, dedicated profile.
 - Real system Firefox is used; we do not fabricate a fake `window.chrome`.
@@ -93,7 +97,7 @@ Chromium challenge solves use an ephemeral profile under `/tmp/opencode` that is
 | `browser_start` / `status` / `stop` / `restart` / `tabs` | Browser lifecycle & tab listing |
 | `browser_open` / `text` / `extract` / `wait` | Navigate & read pages |
 | `browser_click` / `type` / `fill` / `press` | Humanized interaction |
-| `browser_js` / `screenshot` / `fingerprint` | Advanced inspection |
+| `browser_js` / `screenshot` / `fingerprint` / `browser_ip` | Advanced inspection |
 | `browser_chromium_solve` | Solve Cloudflare/anti-bot challenges via nodriver Chromium |
 
 ## Add this MCP to any LLM (ready to go)
@@ -125,7 +129,7 @@ Chromium challenge solves use an ephemeral profile under `/tmp/opencode` that is
 | Browser management | `browser_start`, `browser_status`, `browser_stop`, `browser_restart`, `browser_tabs` |
 | Navigation & reading | `browser_open`, `browser_text`, `browser_extract`, `browser_wait` |
 | Interaction | `browser_click`, `browser_type`, `browser_fill`, `browser_press` |
-| Inspection | `browser_js`, `browser_screenshot`, `browser_fingerprint` |
+| Inspection | `browser_js`, `browser_screenshot`, `browser_fingerprint`, `browser_ip` |
 | Challenge solving | `browser_chromium_solve` |
 
 ## Project structure
